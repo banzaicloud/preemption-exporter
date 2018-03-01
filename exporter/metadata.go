@@ -79,7 +79,7 @@ func (c *terminationExporter) Collect(ch chan<- prometheus.Metric) {
 
 			if err != nil {
 				log.Errorf("Couldn't parse /preempted metadata: %s", err)
-				ch <- prometheus.MustNewConstMetric(c.terminationIndicator, prometheus.GaugeValue, 0, instanceId, preemtped)
+				ch <- prometheus.MustNewConstMetric(c.terminationIndicator, prometheus.GaugeValue, 0, instanceId, preempted)
 			} else {
 				log.Infof("instance endpoint available, will be preempted: %v", preempted)
 				ch <- prometheus.MustNewConstMetric(c.terminationIndicator, prometheus.GaugeValue, 1, instanceId, preempted)
