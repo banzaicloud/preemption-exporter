@@ -1,33 +1,65 @@
 package exporter
 
 import (
-	"github.com/prometheus/client_golang/prometheus"
-	log "github.com/sirupsen/logrus"
+	"errors"
 	"io/ioutil"
+	"net"
 	"net/http"
+	"strconv"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/shirou/gopsutil/host"
+	log "github.com/sirupsen/logrus"
 )
 
 type terminationExporter struct {
+	httpCli              *http.Client
 	metadataEndpoint     string
 	scrapeSuccessful     *prometheus.Desc
 	terminationIndicator *prometheus.Desc
 	terminationTime      *prometheus.Desc
 }
 
-type PreemptedData struct {
-	Preempted string    `json:"action"`
-	Time   	  time.Time `json:"time"`
+func NewPreemptionExporter(me string) *terminationExporter {
+	netTransport := &http.Transport{
+		Dial: (&net.Dialer{
+			Timeout: 5 * time.Second,
+		}).Dial,
+		TLSHandshakeTimeout: 5 * time.Second,
+	}
+	client := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: netTransport,
+	}
+	return &terminationExporter{
+		httpCli:              client,
+		metadataEndpoint:     me,
+		scrapeSuccessful:     prometheus.NewDesc("gcp_instance_metadata_service_available", "Metadata service available", []string{"instance_id", "instance_name"}, nil),
+		terminationIndicator: prometheus.NewDesc("gcp_instance_termination_imminent", "Instance is about to be terminated", []string{"instance_id", "instance_name"}, nil),
+		terminationTime:      prometheus.NewDesc("gcp_instance_termination_in", "Instance will be terminated in", []string{"instance_id", "instance_name"}, nil),
+	}
 }
 
-func NewPreemptionExporter(me string) *terminationExporter {
-	return &terminationExporter{
-		metadataEndpoint:     me,
-		scrapeSuccessful:     prometheus.NewDesc("gcp_instance_metadata_service_available", "Metadata service available", []string{"instance_id"}, nil),
-		terminationIndicator: prometheus.NewDesc("gcp_instance_termination_imminent", "Instance is about to be terminated", []string{"instance_id", "preemption_status"}, nil),
-		terminationTime:      prometheus.NewDesc("gcp_instance_termination_in", "Instance will be terminated in", []string{"instance_id"}, nil),
+func (c *terminationExporter) get(path string) (string, error) {
+	req, err := http.NewRequest("GET", c.metadataEndpoint+path, nil)
+	if err != nil {
+		return "", err
 	}
+	req.Header.Set("Metadata-Flavor", "Google")
+	resp, err := c.httpCli.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return "", errors.New("endpoint not fount")
+	}
+	return string(body), nil
 }
 
 func (c *terminationExporter) Describe(ch chan<- *prometheus.Desc) {
@@ -37,56 +69,33 @@ func (c *terminationExporter) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *terminationExporter) Collect(ch chan<- prometheus.Metric) {
+	var preemptedValue float64
 	log.Info("Fetching termination data from metadata-service")
-	timeout := time.Duration(1 * time.Second)
-	client := http.Client{
-		Timeout: timeout,
-	}
-	var instanceId string
-	idResp, err := client.Get(c.metadataEndpoint + "id")
-
+	instanceID, err := c.get("id")
 	if err != nil {
 		log.Errorf("couldn't parse instance id from metadata: %s", err.Error())
+		ch <- prometheus.MustNewConstMetric(c.scrapeSuccessful, prometheus.GaugeValue, 0, "none", "none")
 		return
 	}
-	if idResp.StatusCode == 404 {
-		log.Errorf("couldn't parse instance id from metadata: endpoint not found",)
+	instanceName, err := c.get("name")
+	if err != nil {
+		log.Errorf("couldn't parse instance name from metadata: %s", err.Error())
+		ch <- prometheus.MustNewConstMetric(c.scrapeSuccessful, prometheus.GaugeValue, 0, instanceID, "none")
 		return
 	}
-	defer idResp.Body.Close()
-	body, _ := ioutil.ReadAll(idResp.Body)
-	instanceId = string(body)
-
-	var preempted string
-	preemptedResp, err := client.Get(c.metadataEndpoint + "preempted")
-
-	preemptedResp, err = client.Get(c.metadataEndpoint + "/preempted")
+	preempted, err := c.get("preempted")
 	if err != nil {
 		log.Errorf("Failed to fetch data from metadata service: %s", err)
-		ch <- prometheus.MustNewConstMetric(c.scrapeSuccessful, prometheus.GaugeValue, 0, instanceId)
+		ch <- prometheus.MustNewConstMetric(c.scrapeSuccessful, prometheus.GaugeValue, 0, instanceID, instanceName)
 		return
-	} else {
-		ch <- prometheus.MustNewConstMetric(c.scrapeSuccessful, prometheus.GaugeValue, 1, instanceId)
-
-		if preemptedResp.StatusCode == 404 {
-			log.Debug("/preempted action endpoint not found")
-			ch <- prometheus.MustNewConstMetric(c.terminationIndicator, prometheus.GaugeValue, 0, "", instanceId)
-			return
-		} else {
-			defer preemptedResp.Body.Close()
-			body, _ := ioutil.ReadAll(preemptedResp.Body)
-			preempted = string(body)
-
-			if err != nil {
-				log.Errorf("Couldn't parse /preempted metadata: %s", err)
-				ch <- prometheus.MustNewConstMetric(c.terminationIndicator, prometheus.GaugeValue, 0, instanceId, preempted)
-			} else {
-				log.Infof("instance endpoint available, will be preempted: %v", preempted)
-				ch <- prometheus.MustNewConstMetric(c.terminationIndicator, prometheus.GaugeValue, 1, instanceId, preempted)
-				uptime, _ := host.Uptime()
-				log.Infof("instance was started at : %v" , uptime)
-				ch <- prometheus.MustNewConstMetric(c.terminationTime, prometheus.GaugeValue, 1, instanceId, string(uptime))
-			}
-		}
 	}
+	ch <- prometheus.MustNewConstMetric(c.scrapeSuccessful, prometheus.GaugeValue, 1, instanceID, instanceName)
+	log.Infof("instance endpoint available, will be preempted: %v", preempted)
+	if isPreempted, _ := strconv.ParseBool(preempted); isPreempted {
+		preemptedValue = 1.0
+	}
+	ch <- prometheus.MustNewConstMetric(c.terminationIndicator, prometheus.GaugeValue, preemptedValue, instanceID, instanceName)
+	uptime, _ := host.Uptime()
+	log.Infof("instance was started at : %v", uptime)
+	ch <- prometheus.MustNewConstMetric(c.terminationTime, prometheus.GaugeValue, float64(uptime), instanceID, instanceName)
 }

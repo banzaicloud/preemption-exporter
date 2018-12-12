@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"time"
 )
 
 // use this minimal http server to test the exporter locally
@@ -12,10 +11,26 @@ import (
 func main() {
 
 	http.HandleFunc("/computeMetadata/v1/instance/id", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Metadata-Flavor") != "Google" {
+			http.Error(w, "Missing Metadata-Flavor:Google header", http.StatusForbidden)
+			return
+		}
 		fmt.Fprint(w, "in-12345")
 	})
 
+	http.HandleFunc("/computeMetadata/v1/instance/name", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Metadata-Flavor") != "Google" {
+			http.Error(w, "Missing Metadata-Flavor:Google header", http.StatusForbidden)
+			return
+		}
+		fmt.Fprint(w, "in")
+	})
+
 	http.HandleFunc("/computeMetadata/v1/instance/preempted", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Metadata-Flavor") != "Google" {
+			http.Error(w, "Missing Metadata-Flavor:Google header", http.StatusForbidden)
+			return
+		}
 		fmt.Fprint(w, "TRUE")
 	})
 
