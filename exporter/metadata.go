@@ -21,11 +21,6 @@ type terminationExporter struct {
 	terminationTime      *prometheus.Desc
 }
 
-type PreemptedData struct {
-	Preempted string    `json:"action"`
-	Time      time.Time `json:"time"`
-}
-
 func NewPreemptionExporter(me string) *terminationExporter {
 	netTransport := &http.Transport{
 		Dial: (&net.Dialer{
