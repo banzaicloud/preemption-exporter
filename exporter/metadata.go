@@ -57,7 +57,7 @@ func (c *terminationExporter) get(path string) (string, error) {
 		return "", err
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		return "", errors.New("endpoint not fount")
+		return "", errors.New("endpoint not found")
 	}
 	return string(body), nil
 }

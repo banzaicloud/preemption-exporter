@@ -1,11 +1,16 @@
 # build stage
-FROM golang:1.9.3-alpine3.7
+FROM golang:1.20-alpine as builder
+RUN apk add --no-cache ca-certificates
 
-ADD . /go/src/github.com/banzaicloud/preemption-exporter
-WORKDIR /go/src/github.com/banzaicloud/preemption-exporter
-RUN go build -o /bin/preemption-exporter .
+WORKDIR /build
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags '-extldflags "-static"' -o /bin/preemption-exporter .
 
-FROM alpine:latest
-RUN apk update && apk add ca-certificates && rm -rf /var/cache/apk/*
-COPY --from=0 /bin/preemption-exporter /bin
-ENTRYPOINT ["/bin/preemption-exporter"]
+FROM scratch
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt \
+     /etc/ssl/certs/ca-certificates.crt
+COPY --from=builder /bin/preemption-exporter /preemption-exporter
+
+EXPOSE 9189
+ENTRYPOINT ["/preemption-exporter"]
